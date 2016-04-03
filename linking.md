@@ -1,13 +1,20 @@
 Linking
 
-This is the process of taking two datasets, such as the US 1930 Census and US 1940 Census, and trying to match records between them.
-None of these records have unique id's so we have to go off of other attributes such as age, place of birth, sex, and first and last name.
+[The first two paragraphs are the same introduction as from the tabulation and extraction article.]
+
+At the MPC, we host large census and related demographic datasets from the US and around the world. We have created websites for data dissemination that allow users to browse the metadata about our datasets and discover which countries, years, and variables are available. We then provide two ways to access the data itself. The primary method available to the user is the ability to submit a request for an extract, which is a subset of our data including only some of the available countries, years, and variabes. We will then process the extract request, produce a zip file which includes data and the codebook to describe the data format and layout, and deliver them a link via email once it is ready. The second way to access data is via online analysis tools. These work for simpler questions which need only a very small amount of data. In this case, we can create a simple cross-tabulated table of 2-5 variables and present it to them in the web browser in real time. For example, the user can request an age x sex x marital status table for the US in year 2000, which would produce rows such as "25-year-old married females".
+
+Our data is logically structured as a "household-person" hierarchy. That is to say, that the top-level unit of organization is the household record, which contains household-level information such as where the household is located and features of the household (e.g. plumbing, single-family vs. apartment, etc...). Households then contain people, represented as one or more person records. The person records contain most of the information in our datasets, and include many individual-level attributes such as age, sex, race, educational attainment, occupation, and so on.
+
+Linking is the process of taking two such datasets, such as the US 1930 Census and US 1940 Census, and trying to match records between them which represent the same person. None of these records have unique id's so we have to go off of other attributes such as age, place of birth, sex, and first and last name, and go through an evaluation of "likelihood that there is a match".
+
 We use an ipython notebook to do this that reads in a series of json files to configure the linking steps.
 There are multiple stetps in this process:
   1. Read in the json config file and validate it.
   2. Read in the parquet files for each dataset and filter them to the records we want to link (or don't filter if we're linking all records).
   3. If we've already found some links in these datasets, read in the parquet file which represents those links and drop those records from each dataset.
-  4. Select out the columns and apply transforms to clean them. These transforms include name substitution (Al for Albert) and string cleaning (O'harris -> o harris).
+  4. Select out the columns we want to use to evaluate link potential and apply transforms to clean them. These transforms include name substitution (Al for Albert) and string cleaning (O'harris -> o harris).
+
   ```python
     #### Create new dataframe by selecting columns and apply transforms (Lazy Spark)
       # This is where the "column_mappings" and "substitution_columns" sections of the configs get processed.
@@ -18,11 +25,8 @@ There are multiple stetps in this process:
       print("Success -- prepped df_a with columns: {}".format(prepped_df_b.columns))
       print("Success -- finished prepping dataframes")
   ```
-  5. Prepare the columns for blocking. Blocking is a step that groups similar records in each dataset so we can use a string comparison function on them later in the process.
-  If you had a small enough dataset, then you wouldn't need this step because you could just compare every record to every other record.
-  Our datsets are large enough that this step is required. We usually block on age (with a 1 year leniency), sex, and birthplace.
-  Occasionally we'll map birthplaces from smaller regions to larger ones as well(Hennepin county -> Minnesota).
-  In order to map one record to multiple groups (such as different ages), we map that column to an array, then explode it.
+  5. Prepare the columns for blocking. Blocking is a step that groups similar records in each dataset so we can use a string comparison function on them later in the process. If you had a small enough dataset, then you wouldn't need this step because you could just compare every record to every other record. Our datsets are large enough that this step is required. We usually block on age (with a 1 year leniency), sex, and birthplace. Occasionally we'll map birthplaces from smaller regions to larger ones as well (Hennepin county -> Minnesota). In order to map one record to multiple groups (such as different ages), we map that column to an array, then explode it.
+
   ```python
   #### Run mappings for blockings on the selected columns (Lazy Spark)
   #Blocking is simply a grouping by the blocking keys on each dataset, and then a join on those groups.
@@ -66,9 +70,11 @@ There are multiple stetps in this process:
           exploded_df_a = exploded_df_a.select(explode_selects)
           exploded_df_b = exploded_df_b.select(explode_selects)
   ```
+  
   6. Transform the dataframes into rdd tuples, where the first value is an array of values to be blocked on (age, sex, birthplace), 
   and the second value contains that values that need to be compared using a string comparison function (first and last name).
   Then cogroup the rdds together on these blocking values.
+
   ```python
   #### Map dataframes to blocking tuples (Lazy Spark)
   #The dataframes now are transformed into RDD's with the following form:
@@ -91,8 +97,9 @@ There are multiple stetps in this process:
   grouped2 = mapped_a2.cogroup(mapped_b2).persist()
   print("Success -- joined the dataframes")
   ```
-  7. Flat map each group using a function that will compare the names of everyon in the first dataset with everyone in the second.
+  7. Flat map each group using a function that will compare the names of everyone in the first dataset with everyone in the second.
   This function will keep those scores and then only return those records that have high enough scores to be a possible match.
+
   ```python
   #### Create a cache for comparisons that appear often (Eager spark)
 
@@ -109,7 +116,9 @@ There are multiple stetps in this process:
   group_compare = create_group_compare_function(comparisons_with_idx, logical_comp_function, comp_caches)
   all_matches_dup_links = grouped2.flatMap(lambda group: group_compare(group))
   ```
+  
   8. Remove the same links that were found in two different groups. For example if two records both had their age mapped to the same groups. 
+
   ```python
   #### Remove duplicate links (Eager Spark)
   #Some potential links are exact copies of one another, because they were found within multiple blocks. This step removes any duplicates.
@@ -118,10 +127,11 @@ There are multiple stetps in this process:
   all_matches = grouped_match_ab.map(lambda group: list(group[1])[0])
   all_matches.persist().count()
   ```
-  9. Turn the reltant links into a dataframe, attach some metadata to them (what config file generated them), 
+  9. Turn the resultant links into a dataframe, attach some metadata to them (e.g. what config file generated them), 
   and then sepearate out links that have records that were found multiple times with those that weren't found multiple times.
   This gives us a unique links dataframe and a duplicates dataframe. Then append those links onto a list of links found
   for these datasets.
+
   ```python
    #### Convert links to new data frame (Lazy Spark)
 
@@ -176,8 +186,6 @@ There are multiple stetps in this process:
   final_links.coalesce(50).write.mode('append').parquet(config["progressive_output_links_file"])
   final_dups.coalesce(50).write.mode('append').parquet(config["progressive_output_duplicates_file"])
   
-  ```python
-  10. Redo steps 1-9 with another config file, whose blocks are more lenient. For example, we might start looking at ages that are
-  perfect in one step, and then start blocking on ages that are up to 1 off in the next step. Each step doesn't have to look at any of
-  the records that were found in the previous step, so the datasets get smaller and smaller as our blocks become more and more lenient.
-  This allows us to eventually use very lenient blocking techniques on the data without paying the price of comparison on the whole datset.
+  ```
+  
+  10. Redo steps 1-9 with another config file, whose blocks are more lenient (i.e. a second pass which cases a wider net looking for matches). For example, we might start looking at ages that are perfect matches in one pass, and then start blocking on ages that are up to 1 year off in the next pass. Each step doesn't have to look at any of the records that were found in the previous step, so the datasets get smaller and smaller as our blocks become more and more lenient. This allows us to eventually use very lenient blocking techniques on the data without paying the price of comparison on the whole datset.
