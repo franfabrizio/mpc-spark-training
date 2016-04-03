@@ -75,3 +75,4 @@ bucket_maps = pre_bucket_tabulation_results.flatMap(lambda row: replace_values_w
 bucket_reduce = bucket_maps.reduceByKey(lambda tab_values_1, tab_values_2: [v1 + v2 for v1, v2 in zip(tab_values_1, tab_values_2)]).sortByKey()
 ```
 
+Doing extraction instead of tabulation is simple - instead of grouping the records into buckets based on various attribute values (e.g. age or sex or marital status) or applying an aggregating operation (e.g. sum), we simply return all matching records.  For extraction, a user might subset the records with a filter like age >= 35 or similar, or restrict the result set to people from a certain geographic area.
